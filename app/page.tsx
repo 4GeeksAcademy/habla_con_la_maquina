@@ -8,12 +8,31 @@ type Message = {
   content: string;
 };
 
-const mockMetrics = {
+type Metrics = {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  responseTime: string;
+};
+
+type ChatApiResponse = {
+  assistantMessage?: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  } | null;
+  model?: string;
+  error?: string;
+};
+
+const initialMetrics: Metrics = {
   model: "llama-3.1-8b-instant",
-  promptTokens: 248,
-  completionTokens: 137,
-  totalTokens: 385,
-  responseTime: "1.18s",
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  responseTime: "0.00s",
 };
 
 const initialMessages: Message[] = [
@@ -39,12 +58,18 @@ const initialMessages: Message[] = [
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [metrics, setMetrics] = useState<Metrics>(initialMetrics);
 
-  const handleSend = (event: FormEvent<HTMLFormElement>) => {
+  const handleSend = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (isLoading) return;
 
     const trimmedMessage = input.trim();
     if (!trimmedMessage) return;
+
+    setError("");
 
     const userMessage: Message = {
       id: Date.now(),
@@ -52,8 +77,63 @@ export default function Home() {
       content: trimmedMessage,
     };
 
-    setMessages((prevMessages) => [...prevMessages, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
     setInput("");
+
+    try {
+      setIsLoading(true);
+      const startedAt = Date.now();
+
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: updatedMessages.map(({ role, content }) => ({ role, content })),
+        }),
+      });
+
+      const data = (await response.json()) as ChatApiResponse;
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudo obtener respuesta de la IA.");
+      }
+
+      if (!data.assistantMessage) {
+        throw new Error("La API no devolvio un mensaje del asistente valido.");
+      }
+
+      const assistantReply: Message = {
+        id: Date.now() + 1,
+        role: "assistant",
+        content: data.assistantMessage,
+      };
+
+      setMessages((prevMessages) => [...prevMessages, assistantReply]);
+
+      const responseSeconds = (Date.now() - startedAt) / 1000;
+      const promptTokens = data.usage?.prompt_tokens ?? 0;
+      const completionTokens = data.usage?.completion_tokens ?? 0;
+      const totalTokens = data.usage?.total_tokens ?? 0;
+
+      setMetrics((prevMetrics) => ({
+        model: data.model || prevMetrics.model,
+        promptTokens: prevMetrics.promptTokens + promptTokens,
+        completionTokens: prevMetrics.completionTokens + completionTokens,
+        totalTokens: prevMetrics.totalTokens + totalTokens,
+        responseTime: `${responseSeconds.toFixed(2)}s`,
+      }));
+    } catch (sendError) {
+      setError(
+        sendError instanceof Error
+          ? sendError.message
+          : "Error inesperado al enviar el mensaje.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -104,10 +184,12 @@ export default function Home() {
           <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
             <div>
               <p className="text-sm text-slate-300">Asistente IA</p>
-              <p className="text-xs text-slate-400">Sesion local mock</p>
+              <p className="text-xs text-slate-400">
+                {isLoading ? "Generando respuesta..." : "Conectado con /api/chat"}
+              </p>
             </div>
             <span className="rounded-full border border-emerald-300/30 bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-200">
-              En linea
+              {isLoading ? "Respondiendo" : "En linea"}
             </span>
           </div>
 
@@ -133,32 +215,40 @@ export default function Home() {
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              disabled={isLoading}
               placeholder="Escribe tu mensaje aqui..."
               className="w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/45"
             />
             <button
               type="submit"
-              className="rounded-2xl border border-cyan-300/40 bg-cyan-400/20 px-5 py-3 text-sm font-medium text-cyan-100 transition hover:bg-cyan-400/30"
+              disabled={isLoading}
+              className="rounded-2xl border border-cyan-300/40 bg-cyan-400/20 px-5 py-3 text-sm font-medium text-cyan-100 transition hover:bg-cyan-400/30 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Enviar
+              {isLoading ? "Enviando..." : "Enviar"}
             </button>
           </form>
+
+          {error && (
+            <p className="mt-3 rounded-xl border border-rose-300/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+              {error}
+            </p>
+          )}
         </section>
 
         <aside className="w-full rounded-3xl border border-white/10 bg-white/5 p-4 shadow-2xl backdrop-blur-xl md:w-72">
           <h2 className="text-sm uppercase tracking-[0.16em] text-slate-300">Metricas</h2>
           <div className="mt-4 space-y-2">
-            <MetricCard label="Modelo" value={mockMetrics.model} />
+            <MetricCard label="Modelo" value={metrics.model} />
             <MetricCard
               label="Prompt tokens"
-              value={String(mockMetrics.promptTokens)}
+              value={String(metrics.promptTokens)}
             />
             <MetricCard
               label="Completion tokens"
-              value={String(mockMetrics.completionTokens)}
+              value={String(metrics.completionTokens)}
             />
-            <MetricCard label="Total tokens" value={String(mockMetrics.totalTokens)} />
-            <MetricCard label="Tiempo respuesta" value={mockMetrics.responseTime} />
+            <MetricCard label="Total tokens" value={String(metrics.totalTokens)} />
+            <MetricCard label="Tiempo respuesta" value={metrics.responseTime} />
           </div>
         </aside>
       </main>
