@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 type Message = {
   id: number;
@@ -35,32 +35,119 @@ const initialMetrics: Metrics = {
   responseTime: "0.00s",
 };
 
-const initialMessages: Message[] = [
-  {
-    id: 1,
-    role: "assistant",
-    content:
-      "Hola, soy tu asistente. Puedo ayudarte a diseñar prompts y estructurar ideas.",
-  },
-  {
-    id: 2,
-    role: "user",
-    content: "Quiero crear una landing para una startup de IA.",
-  },
-  {
-    id: 3,
-    role: "assistant",
-    content:
-      "Perfecto. Empecemos por la propuesta de valor y tres beneficios concretos.",
-  },
-];
+const MESSAGES_STORAGE_KEY = "habla-maquina-messages";
+const METRICS_STORAGE_KEY = "habla-maquina-metrics";
+
+function isInitialMetrics(metrics: Metrics) {
+  return (
+    metrics.model === initialMetrics.model &&
+    metrics.promptTokens === initialMetrics.promptTokens &&
+    metrics.completionTokens === initialMetrics.completionTokens &&
+    metrics.totalTokens === initialMetrics.totalTokens &&
+    metrics.responseTime === initialMetrics.responseTime
+  );
+}
 
 export default function Home() {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [metrics, setMetrics] = useState<Metrics>(initialMetrics);
+  const [hasHydratedStorage, setHasHydratedStorage] = useState(false);
+  const skipHydrationRestoreRef = useRef(false);
+
+  useEffect(() => {
+    let nextMessages: Message[] | null = null;
+    let nextMetrics: Metrics | null = null;
+
+    try {
+      const storedMessages = window.localStorage.getItem(MESSAGES_STORAGE_KEY);
+      if (storedMessages) {
+        const parsedMessages = JSON.parse(storedMessages) as unknown;
+        if (Array.isArray(parsedMessages)) {
+          const validMessages = parsedMessages.filter(
+            (message): message is Message =>
+              typeof message === "object" &&
+              message !== null &&
+              typeof (message as Message).id === "number" &&
+              ((message as Message).role === "user" ||
+                (message as Message).role === "assistant") &&
+              typeof (message as Message).content === "string",
+          );
+
+          if (validMessages.length > 0 || parsedMessages.length === 0) {
+            nextMessages = validMessages;
+          }
+        }
+      }
+
+      const storedMetrics = window.localStorage.getItem(METRICS_STORAGE_KEY);
+      if (storedMetrics) {
+        const parsedMetrics = JSON.parse(storedMetrics) as unknown;
+        if (
+          typeof parsedMetrics === "object" &&
+          parsedMetrics !== null &&
+          typeof (parsedMetrics as Metrics).model === "string" &&
+          typeof (parsedMetrics as Metrics).promptTokens === "number" &&
+          typeof (parsedMetrics as Metrics).completionTokens === "number" &&
+          typeof (parsedMetrics as Metrics).totalTokens === "number" &&
+          typeof (parsedMetrics as Metrics).responseTime === "string"
+        ) {
+          nextMetrics = parsedMetrics as Metrics;
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(MESSAGES_STORAGE_KEY);
+      window.localStorage.removeItem(METRICS_STORAGE_KEY);
+    }
+
+    const hydrationTimer = window.setTimeout(() => {
+      if (skipHydrationRestoreRef.current) {
+        setHasHydratedStorage(true);
+        return;
+      }
+
+      if (nextMessages !== null) {
+        setMessages(nextMessages);
+      }
+      if (nextMetrics !== null) {
+        setMetrics(nextMetrics);
+      }
+      setHasHydratedStorage(true);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(hydrationTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedStorage) return;
+    if (messages.length === 0) {
+      window.localStorage.removeItem(MESSAGES_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messages));
+  }, [messages, hasHydratedStorage]);
+
+  useEffect(() => {
+    if (!hasHydratedStorage) return;
+    if (isInitialMetrics(metrics)) {
+      window.localStorage.removeItem(METRICS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(METRICS_STORAGE_KEY, JSON.stringify(metrics));
+  }, [metrics, hasHydratedStorage]);
+
+  const handleClearConversation = () => {
+    skipHydrationRestoreRef.current = true;
+    setMessages([]);
+    setMetrics(initialMetrics);
+    setError("");
+    window.localStorage.removeItem(MESSAGES_STORAGE_KEY);
+    window.localStorage.removeItem(METRICS_STORAGE_KEY);
+  };
 
   const handleSend = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -174,6 +261,7 @@ export default function Home() {
 
           <button
             type="button"
+            onClick={handleClearConversation}
             className="mt-4 rounded-xl border border-rose-200/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-200 transition hover:bg-rose-500/20"
           >
             Borrar conversacion
@@ -194,21 +282,27 @@ export default function Home() {
           </div>
 
           <div className="flex-1 space-y-3 overflow-y-auto pr-1">
-            {messages.map((message) => (
-              <article
-                key={message.id}
-                className={`max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6 shadow-lg ${
-                  message.role === "user"
-                    ? "ml-auto border-cyan-300/35 bg-cyan-500/15 text-cyan-50"
-                    : "border-white/10 bg-slate-900/70 text-slate-100"
-                }`}
-              >
-                <p className="mb-1 text-[11px] uppercase tracking-[0.16em] text-slate-400">
-                  {message.role === "user" ? "Tu" : "Asistente"}
-                </p>
-                <p>{message.content}</p>
-              </article>
-            ))}
+            {messages.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-white/15 bg-slate-900/30 px-4 py-5 text-sm text-slate-400">
+                No hay mensajes en esta conversacion.
+              </p>
+            ) : (
+              messages.map((message) => (
+                <article
+                  key={message.id}
+                  className={`max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6 shadow-lg ${
+                    message.role === "user"
+                      ? "ml-auto border-cyan-300/35 bg-cyan-500/15 text-cyan-50"
+                      : "border-white/10 bg-slate-900/70 text-slate-100"
+                  }`}
+                >
+                  <p className="mb-1 text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                    {message.role === "user" ? "Tu" : "Asistente"}
+                  </p>
+                  <p>{message.content}</p>
+                </article>
+              ))
+            )}
           </div>
 
           <form onSubmit={handleSend} className="mt-4 flex gap-3">
